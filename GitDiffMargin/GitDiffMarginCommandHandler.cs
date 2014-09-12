@@ -117,6 +117,7 @@
 
                 case GitDiffMarginCommand.GitDiffToolbar:
                 case GitDiffMarginCommand.GitDiffToolbarGroup:
+                case GitDiffMarginCommand.GitDiffOptionsToolbarGroup:
                     // these aren't actually commands, but IDs of the command bars and groups
                     break;
 
@@ -222,6 +223,7 @@
 
                 case GitDiffMarginCommand.GitDiffToolbar:
                 case GitDiffMarginCommand.GitDiffToolbarGroup:
+                case GitDiffMarginCommand.GitDiffOptionsToolbarGroup:
                     // these aren't actually commands, but IDs of the command bars and groups
                     break;
 

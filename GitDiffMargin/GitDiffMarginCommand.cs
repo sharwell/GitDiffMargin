@@ -18,5 +18,6 @@
         GitDiffToolbar = 100,
 
         GitDiffToolbarGroup = 150,
+        GitDiffOptionsToolbarGroup = 151,
     }
 }
