@@ -23,29 +23,33 @@
  */
 
 using System;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Text;
+using Rackspace.Threading;
 
 namespace GitDiffMargin.Core
 {
     public abstract class BackgroundParser : IDisposable
     {
         private readonly WeakReference<ITextBuffer> _textBuffer;
-        private readonly TaskScheduler _taskScheduler;
+        private readonly IScheduler _taskScheduler;
         private readonly ITextDocumentFactoryService _textDocumentFactoryService;
-        private readonly Timer _timer;
+
+        private readonly IObservable<bool> _dirty;
+        private readonly IObservable<ParseResultEventArgs> _parseResults;
+        private readonly ISubject<bool> _parsing = new BehaviorSubject<bool>(false);
+        private readonly ISubject<EventPattern<EventArgs>> _manualDelayTrigger = new BehaviorSubject<EventPattern<EventArgs>>(new EventPattern<EventArgs>(null, EventArgs.Empty));
+        private readonly ISubject<EventPattern<EventArgs>> _manualImmediateTrigger = new Subject<EventPattern<EventArgs>>();
 
         private TimeSpan _reparseDelay;
-        private DateTimeOffset _lastEdit;
-        private bool _dirty;
-        private int _parsing;
         private bool _disposed;
 
-        public event EventHandler<ParseResultEventArgs> ParseComplete;
-
-        protected BackgroundParser(ITextBuffer textBuffer, TaskScheduler taskScheduler, ITextDocumentFactoryService textDocumentFactoryService)
+        protected BackgroundParser(ITextBuffer textBuffer, IScheduler taskScheduler, ITextDocumentFactoryService textDocumentFactoryService)
         {
             if (textBuffer == null)
                 throw new ArgumentNullException("textBuffer");
@@ -58,12 +62,15 @@ namespace GitDiffMargin.Core
             _taskScheduler = taskScheduler;
             _textDocumentFactoryService = textDocumentFactoryService;
 
-            textBuffer.PostChanged += TextBufferPostChanged;
-
-            _dirty = true;
             _reparseDelay = TimeSpan.FromMilliseconds(1500);
-            _timer = new Timer(ParseTimerCallback, null, _reparseDelay, _reparseDelay);
-            _lastEdit = DateTimeOffset.MinValue;
+
+            IObservable<EventPattern<EventArgs>> postChanged = Observable.FromEventPattern(e => textBuffer.PostChanged += e, e => textBuffer.PostChanged -= e);
+            IObservable<EventPattern<EventArgs>> throttledTriggers = Observable.Merge(postChanged, _manualDelayTrigger).Throttle(DelayThrottle);
+            IObservable<object> parseRequest = Observable.Merge(throttledTriggers, _manualImmediateTrigger).Throttle(ParsingThrottle);
+            IObservable<object> setDirty =  Observable.Merge(postChanged, _manualDelayTrigger, _manualImmediateTrigger);
+
+            _parseResults = parseRequest.Select(_ => Observable.FromAsync(ReParseAsync)).Switch();
+            _dirty = Observable.Merge(setDirty.Select(_ => true), ParseResults.Select(_ => false)).DistinctUntilChanged();
         }
 
         public ITextBuffer TextBuffer
@@ -91,17 +98,37 @@ namespace GitDiffMargin.Core
 
             set
             {
-                TimeSpan originalDelay = _reparseDelay;
-                try
-                {
-                    _reparseDelay = value;
-                    _timer.Change(value, value);
-                }
-                catch (ArgumentException)
-                {
-                    _reparseDelay = originalDelay;
-                }
+                if (value < TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException("value");
+
+                _reparseDelay = value;
             }
+        }
+
+        public IObservable<bool> Dirty
+        {
+            get
+            {
+                return _dirty.AsObservable();
+            }
+        }
+
+        public IObservable<ParseResultEventArgs> ParseResults
+        {
+            get
+            {
+                return _parseResults;
+            }
+        }
+
+        protected virtual IObservable<bool> DelayThrottle(EventPattern<EventArgs> trigger)
+        {
+            return _parsing.Where(isParsing => !isParsing).Throttle(ReparseDelay);
+        }
+
+        protected virtual IObservable<bool> ParsingThrottle(EventPattern<EventArgs> trigger)
+        {
+            return _parsing.Where(isParsing => !isParsing);
         }
 
         public void Dispose()
@@ -126,98 +153,25 @@ namespace GitDiffMargin.Core
             }
         }
 
-        public void RequestParse(bool forceReparse)
-        {
-            TryReparse(forceReparse);
-        }
-
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing)
-            {
-                ITextBuffer textBuffer = TextBuffer;
-                if (textBuffer != null)
-                    textBuffer.PostChanged -= TextBufferPostChanged;
-
-                _timer.Dispose();
-            }
-
             _disposed = true;
         }
 
-        protected abstract void ReParseImpl();
+        protected abstract Task<ParseResultEventArgs> ReParseImplAsync(CancellationToken cancellationToken);
 
-        protected virtual void OnParseComplete(ParseResultEventArgs e)
+        protected void MarkDirty()
         {
-            if (e == null)
-                throw new ArgumentNullException("e");
-
-            var t = ParseComplete;
-            if (t != null)
-                t(this, e);
+            _manualDelayTrigger.OnNext(new EventPattern<EventArgs>(this, EventArgs.Empty));
         }
 
-        protected void MarkDirty(bool resetTimer)
+        private Task<ParseResultEventArgs> ReParseAsync(CancellationToken cancellationToken)
         {
-            this._dirty = true;
-            this._lastEdit = DateTimeOffset.Now;
-
-            if (resetTimer)
-                _timer.Change(_reparseDelay, _reparseDelay);
-        }
-
-        private void TextBufferPostChanged(object sender, EventArgs e)
-        {
-            MarkDirty(true);
-        }
-
-        private void ParseTimerCallback(object state)
-        {
-            if (TextBuffer == null)
-            {
-                Dispose();
-                return;
-            }
-
-            TryReparse(_dirty);
-        }
-
-        private void TryReparse(bool forceReparse)
-        {
-            if (!_dirty && !forceReparse)
-                return;
-
-            if (DateTimeOffset.Now - _lastEdit < ReparseDelay)
-                return;
-
-            if (Interlocked.CompareExchange(ref _parsing, 1, 0) == 0)
-            {
-                try
-                {
-                    Task task = Task.Factory.StartNew(ReParse, CancellationToken.None, TaskCreationOptions.None, _taskScheduler);
-                    task.ContinueWith(_ => _parsing = 0);
-                }
-                catch
-                {
-                    _parsing = 0;
-                    throw;
-                }
-            }
-        }
-
-        private void ReParse()
-        {
-            try
-            {
-                _dirty = false;
-                ReParseImpl();
-            }
-            catch (Exception ex)
-            {
-                // Failure to handle TPL exception in .NET 4 would bring down Visual Studio 2010
-                if (ErrorHandler.IsCriticalException(ex))
-                    throw;
-            }
+            return
+                CompletedTask.Default
+                .Select(_ => _parsing.OnNext(true))
+                .Then(_ => ReParseImplAsync(cancellationToken))
+                .Finally(_ => _parsing.OnNext(false));
         }
     }
 }

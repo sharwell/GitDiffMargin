@@ -2,11 +2,13 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reactive.Concurrency;
 using System.Threading;
 using System.Threading.Tasks;
 using GitDiffMargin.Git;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Text;
+using Rackspace.Threading;
 
 namespace GitDiffMargin.Core
 {
@@ -17,7 +19,7 @@ namespace GitDiffMargin.Core
         private readonly ITextDocument _textDocument;
         private readonly ITextBuffer _documentBuffer;
 
-        internal DiffUpdateBackgroundParser(ITextBuffer textBuffer, ITextBuffer documentBuffer, TaskScheduler taskScheduler, ITextDocumentFactoryService textDocumentFactoryService, IGitCommands commands)
+        internal DiffUpdateBackgroundParser(ITextBuffer textBuffer, ITextBuffer documentBuffer, IScheduler taskScheduler, ITextDocumentFactoryService textDocumentFactoryService, IGitCommands commands)
             : base(textBuffer, taskScheduler, textDocumentFactoryService)
         {
             _documentBuffer = documentBuffer;
@@ -28,8 +30,6 @@ namespace GitDiffMargin.Core
             {
                 if (_commands.IsGitRepository(_textDocument.FilePath))
                 {
-                    _textDocument.FileActionOccurred += OnFileActionOccurred;
-
                     var repositoryDirectory = _commands.GetGitRepository(_textDocument.FilePath);
                     if (repositoryDirectory != null)
                     {
@@ -72,15 +72,7 @@ namespace GitDiffMargin.Core
             if (string.Equals(Path.GetExtension(e.Name), ".lock", StringComparison.OrdinalIgnoreCase))
                 return;
 
-            MarkDirty(true);
-        }
-
-        private void OnFileActionOccurred(object sender, TextDocumentFileActionEventArgs e)
-        {
-            if ((e.FileActionType & FileActionTypes.ContentSavedToDisk) != 0)
-            {
-                MarkDirty(true);
-            }
+            MarkDirty();
         }
 
         public override string Name
@@ -91,25 +83,22 @@ namespace GitDiffMargin.Core
             }
         }
 
-        protected override void ReParseImpl()
+        protected override Task<ParseResultEventArgs> ReParseImplAsync(CancellationToken cancellationToken)
         {
-            try
-            {
-                var stopwatch = Stopwatch.StartNew();
+            var stopwatch = Stopwatch.StartNew();
 
-                var snapshot = TextBuffer.CurrentSnapshot;
-                ITextDocument textDocument;
-                if (!TextDocumentFactoryService.TryGetTextDocument(_documentBuffer, out textDocument)) return;
+            var snapshot = TextBuffer.CurrentSnapshot;
+            ITextDocument textDocument;
+            if (!TextDocumentFactoryService.TryGetTextDocument(_documentBuffer, out textDocument))
+                return CompletedTask.Canceled<ParseResultEventArgs>();
 
-                var diff = _commands.GetGitDiffFor(textDocument, snapshot);
-                var result = new DiffParseResultEventArgs(snapshot, stopwatch.Elapsed, diff.ToList());
-                OnParseComplete(result);
-            }
-            catch (InvalidOperationException)
-            {
-                MarkDirty(true);
-                throw;
-            }
+            return CompletedTask.Default.Then(_ => Task.Factory.StartNew(
+                () =>
+                {
+                    var diff = _commands.GetGitDiffFor(textDocument, snapshot);
+                    ParseResultEventArgs result = new DiffParseResultEventArgs(snapshot, stopwatch.Elapsed, diff.ToList());
+                    return result;
+                }));
         }
 
         protected override void Dispose(bool disposing)
@@ -118,10 +107,6 @@ namespace GitDiffMargin.Core
 
             if (disposing)
             {
-                if (_textDocument != null)
-                {
-                    _textDocument.FileActionOccurred -= OnFileActionOccurred;
-                }
                 if (_watcher != null)
                 {
                     _watcher.Dispose();

@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Reactive.Concurrency;
 using System.Windows;
 using System.Windows.Media;
 using GitDiffMargin.Git;
@@ -20,6 +20,7 @@ namespace GitDiffMargin.Core
         private readonly IGitCommands _gitCommands;
 
         private readonly DiffUpdateBackgroundParser _parser;
+        private readonly IDisposable _parseSubscription;
 
         private Brush _additionBrush;
         private Brush _modificationBrush;
@@ -38,14 +39,13 @@ namespace GitDiffMargin.Core
 
             _gitCommands = gitCommands;
 
-            _parser = new DiffUpdateBackgroundParser(textView.TextBuffer, textView.TextDataModel.DocumentBuffer, TaskScheduler.Default, textDocumentFactoryService, GitCommands);
-            _parser.ParseComplete += HandleParseComplete;
-            _parser.RequestParse(false);
+            _parser = new DiffUpdateBackgroundParser(textView.TextBuffer, textView.TextDataModel.DocumentBuffer, Scheduler.Default, textDocumentFactoryService, GitCommands);
+            _parseSubscription = _parser.ParseResults.Subscribe(HandleParseComplete);
 
             _textView.Closed += (sender, e) =>
             {
                 _editorFormatMap.FormatMappingChanged -= HandleFormatMappingChanged;
-                _parser.ParseComplete -= HandleParseComplete;
+                _parseSubscription.Dispose();
             };
 
             UpdateBrushes();
@@ -318,7 +318,7 @@ namespace GitDiffMargin.Core
             return document;
         }
 
-        private void HandleParseComplete(object sender, ParseResultEventArgs e)
+        private void HandleParseComplete(ParseResultEventArgs e)
         {
             var diffResult = e as DiffParseResultEventArgs;
             if (diffResult == null) return;
