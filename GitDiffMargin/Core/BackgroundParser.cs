@@ -37,40 +37,32 @@ namespace GitDiffMargin.Core
     public abstract class BackgroundParser : IDisposable
     {
         private readonly WeakReference<ITextBuffer> _textBuffer;
-        private readonly IScheduler _taskScheduler;
         private readonly ITextDocumentFactoryService _textDocumentFactoryService;
 
-        private readonly IObservable<bool> _dirty;
         private readonly IObservable<ParseResultEventArgs> _parseResults;
-        private readonly ISubject<bool> _parsing = new BehaviorSubject<bool>(false);
         private readonly ISubject<EventPattern<EventArgs>> _manualDelayTrigger = new BehaviorSubject<EventPattern<EventArgs>>(new EventPattern<EventArgs>(null, EventArgs.Empty));
         private readonly ISubject<EventPattern<EventArgs>> _manualImmediateTrigger = new Subject<EventPattern<EventArgs>>();
 
         private TimeSpan _reparseDelay;
         private bool _disposed;
 
-        protected BackgroundParser(ITextBuffer textBuffer, IScheduler taskScheduler, ITextDocumentFactoryService textDocumentFactoryService)
+        protected BackgroundParser(ITextBuffer textBuffer, ITextDocumentFactoryService textDocumentFactoryService)
         {
             if (textBuffer == null)
                 throw new ArgumentNullException("textBuffer");
-            if (taskScheduler == null)
-                throw new ArgumentNullException("taskScheduler");
             if (textDocumentFactoryService == null)
                 throw new ArgumentNullException("textDocumentFactoryService");
 
             _textBuffer = new WeakReference<ITextBuffer>(textBuffer);
-            _taskScheduler = taskScheduler;
             _textDocumentFactoryService = textDocumentFactoryService;
 
             _reparseDelay = TimeSpan.FromMilliseconds(1500);
 
             IObservable<EventPattern<EventArgs>> postChanged = Observable.FromEventPattern(e => textBuffer.PostChanged += e, e => textBuffer.PostChanged -= e);
             IObservable<EventPattern<EventArgs>> throttledTriggers = Observable.Merge(postChanged, _manualDelayTrigger).Throttle(DelayThrottle);
-            IObservable<object> parseRequest = Observable.Merge(throttledTriggers, _manualImmediateTrigger).Throttle(ParsingThrottle);
-            IObservable<object> setDirty =  Observable.Merge(postChanged, _manualDelayTrigger, _manualImmediateTrigger);
+            IObservable<object> parseRequest = Observable.Merge(throttledTriggers, _manualImmediateTrigger);
 
             _parseResults = parseRequest.Select(_ => Observable.FromAsync(ReParseAsync)).Switch();
-            _dirty = Observable.Merge(setDirty.Select(_ => true), ParseResults.Select(_ => false)).DistinctUntilChanged();
         }
 
         public ITextBuffer TextBuffer
@@ -105,14 +97,6 @@ namespace GitDiffMargin.Core
             }
         }
 
-        public IObservable<bool> Dirty
-        {
-            get
-            {
-                return _dirty.AsObservable();
-            }
-        }
-
         public IObservable<ParseResultEventArgs> ParseResults
         {
             get
@@ -123,12 +107,7 @@ namespace GitDiffMargin.Core
 
         protected virtual IObservable<bool> DelayThrottle(EventPattern<EventArgs> trigger)
         {
-            return _parsing.Where(isParsing => !isParsing).Throttle(ReparseDelay);
-        }
-
-        protected virtual IObservable<bool> ParsingThrottle(EventPattern<EventArgs> trigger)
-        {
-            return _parsing.Where(isParsing => !isParsing);
+            return Observable.Return(true).Delay(ReparseDelay);
         }
 
         public void Dispose()
@@ -167,11 +146,8 @@ namespace GitDiffMargin.Core
 
         private Task<ParseResultEventArgs> ReParseAsync(CancellationToken cancellationToken)
         {
-            return
-                CompletedTask.Default
-                .Select(_ => _parsing.OnNext(true))
-                .Then(_ => ReParseImplAsync(cancellationToken))
-                .Finally(_ => _parsing.OnNext(false));
+            return CompletedTask.Default
+                .Then(_ => ReParseImplAsync(cancellationToken));
         }
     }
 }

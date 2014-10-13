@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Reactive.Concurrency;
 using System.Windows;
 using System.Windows.Media;
 using GitDiffMargin.Git;
@@ -39,7 +38,7 @@ namespace GitDiffMargin.Core
 
             _gitCommands = gitCommands;
 
-            _parser = new DiffUpdateBackgroundParser(textView.TextBuffer, textView.TextDataModel.DocumentBuffer, Scheduler.Default, textDocumentFactoryService, GitCommands);
+            _parser = new DiffUpdateBackgroundParser(textView.TextBuffer, textView.TextDataModel.DocumentBuffer, textDocumentFactoryService, GitCommands);
             _parseSubscription = _parser.ParseResults.Subscribe(HandleParseComplete);
 
             _textView.Closed += (sender, e) =>

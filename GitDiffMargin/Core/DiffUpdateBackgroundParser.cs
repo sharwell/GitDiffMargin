@@ -2,7 +2,6 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reactive.Concurrency;
 using System.Threading;
 using System.Threading.Tasks;
 using GitDiffMargin.Git;
@@ -19,8 +18,8 @@ namespace GitDiffMargin.Core
         private readonly ITextDocument _textDocument;
         private readonly ITextBuffer _documentBuffer;
 
-        internal DiffUpdateBackgroundParser(ITextBuffer textBuffer, ITextBuffer documentBuffer, IScheduler taskScheduler, ITextDocumentFactoryService textDocumentFactoryService, IGitCommands commands)
-            : base(textBuffer, taskScheduler, textDocumentFactoryService)
+        internal DiffUpdateBackgroundParser(ITextBuffer textBuffer, ITextBuffer documentBuffer, ITextDocumentFactoryService textDocumentFactoryService, IGitCommands commands)
+            : base(textBuffer, textDocumentFactoryService)
         {
             _documentBuffer = documentBuffer;
             _commands = commands;
